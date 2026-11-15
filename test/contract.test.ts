@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
-  MAX_ENERGY_FRAMES, SITUATION_VERSION, TABLE_SIZE, energyMessage, offMessage, parseSituationMessage, parseStation,
-  parseWants, stationId, tableMessage,
+  MAX_ENERGY_FRAMES, MAX_MOTION_FRAMES, SITUATION_SIGNALS, SITUATION_VERSION, TABLE_SIZE, energyMessage, motionMessage,
+  offMessage, parseSituationMessage, parseStation, parseWants, shakeMessage, situationSignal, stationId, tableMessage,
 } from "../src/index.js";
 
 const station = { net: "IU", sta: "ANMO", loc: "00", cha: "BHZ", name: "Albuquerque, New Mexico", rate: 20 };
@@ -72,4 +72,43 @@ test("stations and wants", () => {
   assert.deepEqual(parseWants({ energy: true, table: { speed: 10 } }), { energy: true, table: { speed: 10 } });
   assert.deepEqual(parseWants({ table: { speed: 3 }, energy: true }), { energy: true });
   assert.equal(parseWants({}), null);
+});
+
+test("motion (0.2.0): frames copied and clamped; heading wraps into 0..1; at most MAX_MOTION_FRAMES", () => {
+  const frames = Array.from({ length: 40 }, (_, i) => ({ at: i, tiltX: i ? 0.25 : -3, tiltY: 2, heading: 1.25, shake: -1 }));
+  const m = parseSituationMessage(motionMessage("aria", frames));
+  assert.ok(m && m.kind === "motion");
+  assert.equal(m.frames.length, MAX_MOTION_FRAMES);
+  assert.deepEqual(m.frames[0], { at: 0, tiltX: -1, tiltY: 1, heading: 0.25, shake: 0 });
+  assert.notEqual(m.frames[1], frames[1]);
+  assert.equal(parseSituationMessage({ v: 1, kind: "motion", source: "aria", frames: [{ at: 0, tiltX: 0, tiltY: 0, heading: 0 }] }), null);
+});
+
+test("shake (0.2.0): a trigger with a strength 0–1", () => {
+  assert.deepEqual(parseSituationMessage(shakeMessage("aria", 3.5, 4)), { v: 1, kind: "shake", source: "aria", at: 3.5, strength: 1 });
+  assert.equal(parseSituationMessage({ v: 1, kind: "shake", source: "aria", at: Number.NaN, strength: 1 }), null);
+});
+
+test("status.motion (0.2.0) is optional: older statuses still parse; an unknown state is dropped", () => {
+  const base = { v: 1, kind: "status", source: "aria", state: "live", station, newestAgeSec: 1, behindSec: 2, hold: false, credit: "" };
+  const s = parseSituationMessage({ ...base, motion: "live" });
+  assert.ok(s && s.kind === "status" && s.motion === "live");
+  const old = parseSituationMessage(base);
+  assert.ok(old && old.kind === "status" && !("motion" in old));
+  const odd = parseSituationMessage({ ...base, motion: "dancing" });
+  assert.ok(odd && odd.kind === "status" && !("motion" in odd));
+});
+
+test("wants: motion (0.2.0) alone is a want", () => {
+  assert.deepEqual(parseWants({ motion: true }), { motion: true });
+  assert.deepEqual(parseWants({ energy: true, motion: "yes" }), { energy: true });
+});
+
+test("signals: saved ids never change; ARIA Energy is shown as Ground Energy", () => {
+  assert.deepEqual(SITUATION_SIGNALS.map((s) => s.id), [
+    "aria:energy", "aria:phone-tilt-x", "aria:phone-tilt-y", "aria:phone-shake", "aria:phone-heading",
+  ]);
+  assert.equal(situationSignal("aria:energy")?.label, "Ground Energy");
+  assert.equal(situationSignal("aria:phone-tilt-x")?.label, "Phone Tilt X");
+  assert.equal(situationSignal("nope"), undefined);
 });
